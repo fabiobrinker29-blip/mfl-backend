@@ -44,7 +44,7 @@ jobs:
           git -C archive add data
           if ! git -C archive diff --cached --quiet; then
             git -C archive commit -m 'Update MFL public archive'
-            git -C archive -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:refs/heads/mfl-data
+            git -C archive -c http.https://github.com/.extraheader= -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:refs/heads/mfl-data
           fi
       - name: Daily recoverable backup
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 7 * * *'
@@ -53,7 +53,7 @@ jobs:
           tar -czf mfl-backup.tar.gz -C archive data
       - uses: actions/upload-artifact@v4
         with:
-          name: mfl-backup-${{ github.run_id }}
+          name: mfl-backup-${{ github.run_id }}-${{ github.run_attempt }}
           path: mfl-backup.tar.gz
           if-no-files-found: ignore
           retention-days: 14
