@@ -1,0 +1,62 @@
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+
+export const score=e=>Number(e.custom_points??e.points);
+export function pairs(entries){const groups=new Map();for(const e of entries)if(e.matchup_id!=null&&(e.custom_points??e.points)!=null&&Number.isFinite(score(e)))groups.set(e.matchup_id,[...(groups.get(e.matchup_id)||[]),e]);return [...groups.values()].filter(p=>p.length===2)}
+export function csv(text){const rows=[];let row=[],cell='',quoted=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(cell);cell=''}else if(c==='\n'&&!quoted){row.push(cell.replace(/\r$/,''));rows.push(row);row=[];cell=''}else cell+=c}if(cell||row.length){row.push(cell.replace(/\r$/,''));rows.push(row)}const headers=rows.shift()||[];return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??''])))}
+const names={'902968070430314496':'Erechas City Rangers','1223001233300660224':'Passo Fundo Choppers','1262011252549369856':'Caxias Templar Knights','1263551567122936':'Joinville Red Reapers','1263551567122935808':'Joinville Red Reapers','1264998484763738112':'Partenon Eagles','1265004652781383680':'Miami American Holding','1265005040385413120':'Panazzolo Runners','1265073861712433152':'Tampa Bay Billcaneers','1275446179814965248':'Cittadella Juicers','1397607916109889536':'Porto Alegre Gunslingers'};
+const format=n=>Number(n).toFixed(2).replace('.',',');
+export function cardSVG(item){
+ const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+ const wrap=(text,max)=>{const lines=[];let line='';for(const word of String(text).split(/\s+/)){if((line+' '+word).length>max&&line){lines.push(line);line=word}else line=(line+' '+word).trim()}if(line)lines.push(line);return lines};
+ let y=180;const text=(value,size,max,color)=>wrap(value,max).map(line=>{const row=`<text x="70" y="${y}" font-size="${size}" fill="${color}">${escape(line)}</text>`;y+=size*1.45;return row}).join('');
+ const heading=text(item.title,44,35,'#fff4df');y+=35;const content=text([item.summary,...(item.lines||[])].join(' • '),27,61,'#d5e5d8');
+ return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350"><rect width="1080" height="1350" fill="#071310"/><g stroke="#204b32">${Array.from({length:10},(_,i)=>`<path d="M30 ${120+i*120}H1050"/>`).join('')}</g><g font-family="Arial,sans-serif" font-weight="bold"><text x="70" y="85" fill="#c5eda4" font-size="26">MFL / ${escape(item.kind.toUpperCase())}</text>${heading}<g>${content}</g><rect x="40" y="1250" width="1000" height="70" fill="#071310"/><text x="70" y="1290" fill="#c5eda4" font-size="23">ligamfl.netlify.app • Fonte: Sleeper</text></g></svg>`;
+}
+export function makeFeed(league,rosters,users,weeks,transactions,players,at,previous=[]){
+ const name=id=>{const r=rosters.find(r=>r.roster_id===Number(id)),u=users.find(u=>u.user_id===r?.owner_id);return names[r?.owner_id]||u?.metadata?.team_name||u?.display_name||`Franquia ${id}`};
+ const items=[],add=item=>items.push({...item,at:previous.find(p=>p.id===item.id)?.at||at});let max=-Infinity;
+ for(const w of [...weeks].sort((a,b)=>a.week-b.week)){const games=pairs(w.entries);if(!games.length)continue;const lines=games.map(p=>`${name(p[0].roster_id)} ${format(score(p[0]))} × ${format(score(p[1]))} ${name(p[1].roster_id)}`),leaders=games.flat().sort((a,b)=>score(b)-score(a)),best=score(leaders[0]),winners=leaders.filter(e=>score(e)===best);
+  add({id:`edition-${league.season}-${w.week}`,kind:'Resumo da rodada',title:`Semana ${w.week} • ${league.season}`,summary:`Destaque: ${winners.map(e=>name(e.roster_id)).join(' / ')} com ${format(best)} pontos.`,lines});
+  for(const pair of games)for(const mine of pair){const other=pair.find(e=>e!==mine);add({id:`team-${league.season}-${w.week}-${mine.roster_id}`,kind:'Resumo da franquia',title:name(mine.roster_id),summary:`Semana ${w.week}: ${score(mine)>score(other)?'vitória':score(mine)<score(other)?'derrota':'empate'} por ${format(score(mine))} × ${format(score(other))} contra ${name(other.roster_id)}.`,lines:[]})}
+  if(w.week<Number(league.settings?.playoff_week_start||99)&&best>max){if(Number.isFinite(max))add({id:`record-${league.season}-${w.week}`,kind:'Recorde da temporada',title:'Uma nova marca no ataque.',summary:`${winners.map(e=>name(e.roster_id)).join(' / ')}: ${format(best)} pontos na semana ${w.week}, superando a maior pontuação das semanas anteriores (${format(max)}).`,lines:[]});max=best;}
+ }
+ const trades=[...new Map(transactions.filter(t=>t.type==='trade'&&t.status==='complete').map(t=>[t.transaction_id,t])).values()];
+ for(const t of trades){const lines=[];for(const id of t.roster_ids||[]){const assets=Object.entries(t.adds||{}).filter(([,owner])=>Number(owner)===id).map(([pid])=>players?.[pid]?.full_name||[players?.[pid]?.first_name,players?.[pid]?.last_name].filter(Boolean).join(' ')||pid);for(const pick of t.draft_picks||[])if(Number(pick.owner_id)===id)assets.push(`Escolha ${pick.season} · rodada ${pick.round}`);for(const cash of t.waiver_budget||[])if(Number(cash.receiver)===id)assets.push(`${cash.amount} FAAB`);lines.push(`${name(id)} recebe: ${assets.join(', ')||'nenhum ativo listado'}`)}add({id:`trade-${t.transaction_id}`,kind:'Trade concluída',title:(t.roster_ids||[]).map(name).join(' × '),summary:`Negociação registrada no Sleeper em ${new Date(t.status_updated||t.created).toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'})}.`,lines})}
+ return items.reverse().slice(0,300);
+}
+export async function collect(out='data'){
+ const now=new Date(),at=now.toISOString(),today=at.slice(0,10),errors=[],base='https://api.sleeper.app/v1';
+ const read=async(file,fallback)=>{try{return JSON.parse(await readFile(path.join(out,file),'utf8'))}catch{return fallback}};
+ const write=async(file,value)=>{await mkdir(path.dirname(path.join(out,file)),{recursive:true});await writeFile(path.join(out,file),JSON.stringify(value))};
+ const request=async(url,text=false)=>{const r=await fetch(url,{signal:AbortSignal.timeout(25000)});if(!r.ok)throw new Error(`HTTP ${r.status}`);return text?r.text():r.json()};
+ const safe=async(label,fn,fallback)=>{try{return await fn()}catch{errors.push(label+' indisponível');return fallback}};
+ let league=await safe('Liga Sleeper',()=>request(`${base}/league/${process.env.LEAGUE_ID||'1309632074868600832'}`),null);
+ if(!league?.league_id){await write('status.json',{at,ok:false,errors});throw new Error('Liga indisponível; arquivo anterior preservado')}
+ const week=Math.max(1,Math.min(18,Number(league.settings?.leg||1))),season=league.season,completed=Math.max(0,Math.min(18,Number(league.settings?.last_scored_leg||0)));
+ const prior=await read('state.json',{}),daily=prior.day!==today||prior.leagueId!==league.league_id;
+ const [rosters,users,entries]=await Promise.all([request(`${base}/league/${league.league_id}/rosters`),request(`${base}/league/${league.league_id}/users`),request(`${base}/league/${league.league_id}/matchups/${week}`)]);
+ if(![rosters,users,entries].every(Array.isArray))throw new Error('Resposta Sleeper inválida');
+ const replay=await read(`replay/${season}-${week}.json`,{leagueId:league.league_id,week,snapshots:[]});
+ const compact=entries.map(e=>({roster_id:e.roster_id,matchup_id:e.matchup_id,points:e.points,custom_points:e.custom_points}));
+ if(!replay.snapshots.length||JSON.stringify(replay.snapshots.at(-1).entries)!==JSON.stringify(compact))replay.snapshots.push({at,leagueId:league.league_id,week,entries:compact});replay.snapshots=replay.snapshots.slice(-2500);
+ const nfl=await safe('Agenda ESPN',()=>request(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${season}&seasontype=2&week=${week}&limit=100`),null);
+ if(nfl&&Number(nfl.season?.year)===Number(season)&&Number(nfl.week?.number)===week)replay.nfl=(nfl.events||[]).map(e=>({id:e.id,name:e.shortName,date:e.date,status:e.status?.type?.shortDetail||'',state:e.status?.type?.state||'pre'}));
+ await write(`replay/${season}-${week}.json`,replay);
+ const weeks=[];for(let w=Number(league.settings?.start_week||1);w<=completed;w++){let saved=await read(`weeks/${season}-${w}.json`,null);if(daily||!saved){const next=await safe(`Semana ${w}`,()=>request(`${base}/league/${league.league_id}/matchups/${w}`),null);if(Array.isArray(next)){saved={week:w,entries:next,at};await write(`weeks/${season}-${w}.json`,saved)}}if(saved)weeks.push(saved)}
+ const transactionWeeks=daily?Array.from({length:19},(_,i)=>i):[0,week];for(const w of transactionWeeks){const rows=await safe(`Transações ${w}`,()=>request(`${base}/league/${league.league_id}/transactions/${w}`),null);if(Array.isArray(rows))await write(`transactions/${season}-${w}.json`,rows)}
+ const transactions=[];for(let w=0;w<=18;w++)transactions.push(...await read(`transactions/${season}-${w}.json`,[]));
+ let players=await read('players.json',{});if(daily||!Object.keys(players).length){const all=await safe('Cadastro de jogadores',()=>request(`${base}/players/nfl`),null);if(all){players=Object.fromEntries(Object.entries(all).map(([id,p])=>[id,{full_name:p.full_name||[p.first_name,p.last_name].filter(Boolean).join(' '),position:p.position,team:p.team,injury_status:p.injury_status}]));await write('players.json',players)}}
+ const previous=await read('feed.json',{items:[]});const items=makeFeed(league,rosters,users,weeks,transactions,players,at,previous.items);
+ await mkdir(path.join(out,'cards'),{recursive:true});for(const item of items){item.card=`cards/${item.id}.svg`;await writeFile(path.join(out,item.card),cardSVG(item))}
+ await write('feed.json',{at,leagueId:league.league_id,season,items});
+ const slots=(league.roster_positions||[]).filter(s=>!['BN','IR'].includes(s));
+ await write('checklists.json',{at,leagueId:league.league_id,week,teams:rosters.map(r=>({rosterId:r.roster_id,slots:slots.map((slot,i)=>{const id=String(r.starters?.[i]||'0'),p=players[id];return {slot,id,name:p?.full_name||'Vaga vazia',team:p?.team||null,status:p?.injury_status||null,issue:id==='0'?'Vaga vazia':p?.injury_status||null}})}))});
+ await write('league.json',{at,league,rosters,users:users.map(u=>({user_id:u.user_id,display_name:u.display_name,metadata:{team_name:u.metadata?.team_name}}))});
+ if(daily||!(await read('usage.json',null))){const raw=await safe('Participação nflverse',()=>request(`https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_${season}.csv`,true),null);if(raw){const rows=csv(raw).filter(r=>r.game_type==='REG'||!r.game_type),group=new Map();for(const row of rows){const key=`${row.player}:${row.team}`;group.set(key,[...(group.get(key)||[]),row])}const list=[...group.values()].map(rs=>{rs.sort((a,b)=>Number(b.week)-Number(a.week));const a=rs[0],b=rs[1],percent=Number(a.offense_pct);return {name:a.player,team:({WAS:'WSH',LA:'LAR',JAC:'JAX'}[a.team]||a.team),week:Number(a.week),percent,change:b?percent-Number(b.offense_pct):null}}).filter(r=>Number.isFinite(r.percent)&&r.percent>0);await write('usage.json',{at,source:'nflverse / PFR snap counts',players:list})}}
+ if(process.env.SPORTSDATAIO_KEY){const injuries=await safe('SportsDataIO',()=>request(`https://api.sportsdata.io/v3/nfl/stats/json/Injuries/${season}/${week}?key=${encodeURIComponent(process.env.SPORTSDATAIO_KEY)}`),null);if(Array.isArray(injuries))await write('licensed-injuries.json',{at,players:injuries})}
+ await write('state.json',{day:today,leagueId:league.league_id});await write('status.json',{at,ok:errors.length===0,leagueId:league.league_id,season,week,errors,snapshots:replay.snapshots.length,completedWeeks:weeks.length,schedule:'A cada 10 minutos; sujeito ao agendador GitHub. Dados NFL de participação são consultados diariamente.'});
+ console.log(JSON.stringify({ok:!errors.length,season,week,snapshots:replay.snapshots.length,errors}));
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)collect(process.argv[2]||'data').catch(e=>{console.error(e.message);process.exitCode=1});
