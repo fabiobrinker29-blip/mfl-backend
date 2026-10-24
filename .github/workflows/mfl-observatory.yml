@@ -1,0 +1,59 @@
+name: MFL Observatory
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '23 7 * * *'
+permissions:
+  contents: write
+concurrency:
+  group: mfl-observatory
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - name: Open durable archive branch
+        shell: bash
+        run: |
+          git -C source fetch origin mfl-data || true
+          if git -C source show-ref --verify --quiet refs/remotes/origin/mfl-data; then
+            git -C source worktree add ../archive origin/mfl-data
+          else
+            mkdir archive
+            git -C archive init
+            git -C archive remote add origin "$(git -C source remote get-url origin)"
+          fi
+          git -C archive config user.name 'MFL Observatory'
+          git -C archive config user.email 'actions@users.noreply.github.com'
+      - name: Collect real league data
+        env:
+          LEAGUE_ID: '1309632074868600832'
+        run: node source/mfl-automation.mjs archive/data
+      - name: Save archive
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test -d archive/data || exit 0
+          git -C archive add data
+          if ! git -C archive diff --cached --quiet; then
+            git -C archive commit -m 'Update MFL public archive'
+            git -C archive -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:refs/heads/mfl-data
+          fi
+      - name: Daily recoverable backup
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 7 * * *'
+        shell: bash
+        run: |
+          tar -czf mfl-backup.tar.gz -C archive data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mfl-backup-${{ github.run_id }}
+          path: mfl-backup.tar.gz
+          if-no-files-found: ignore
+          retention-days: 14
